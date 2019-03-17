@@ -1,200 +1,133 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
+tfd = tfp.distributions
+import sonnet as snt
 import numpy as np
+from functools import reduce
 
-LEARNING_RATE = 1e-3
+class VAE(snt.AbstractModule):
 
-def encoder(x):
+    def __init__(self, input_shape, num_units, latent_dim=2, name="vae"):
 
-    num_inputs = 28*28
-    num_units = 300
-    num_z = 2
+        super(VAE, self).__init__(name=name)
 
-    input_shape = [-1, 28 * 28]
+        self.input_shape = input_shape
+        self.num_inputs = reduce(lambda x, y: x * y, input_shape)
+        self.num_units = num_units
+        self.latent_dim = latent_dim
+        self.q_distribution = None
+        self.latent_prior = None
 
-    inputs = tf.reshape(x, input_shape)
 
-    # The encoder is q_theta(z | x)
-    # We assume that each z_i is Gaussian with mean mu and variance sigma
+    def kl_divergence(self):
+        """
+        Calculates the KL divergence between the current variational posterior and the prior:
 
-    dense1 = tf.layers.dense(
-        inputs=inputs,
-        units=num_units,
-        activation=tf.nn.relu
-    )
+        KL[ q(z | theta) || p(z) ]
 
-    mu = tf.layers.dense(
-        inputs=dense1,
-        units=num_z,
-        activation=None
-    )
+        """
+        if self.q_distribution is None or self.latent_prior is None:
+            raise Exception("VAE module needs to be connected into the graph before calculating the KL divergence of the variational posterior and the prior!")
+        return tf.reduce_sum(tfd.kl_divergence(self.q_distribution, self.latent_prior))
 
-    sigma = tf.layers.dense(
-        inputs=dense1,
-        units=num_z,
-        activation=tf.nn.softplus
-    )
 
-    return mu, sigma
+    def input_log_prob(self):
+        """
+        Returns the log-likelihood of the current input for the output Bernoulli
+        """
+        return tf.reduce_sum(self.log_prob)
 
-def decoder(z):
 
-    num_inputs = 28*28
-    num_units = 300
-    num_z = 2
+    @snt.reuse_variables
+    def encode(self, inputs):
+        """
+        Builds the encoder part of the VAE, i.e. q(x | theta).
+        This maps from the input to the latent representation.
+        """
+        flatten = snt.BatchFlatten()
+        flattened = flatten(inputs)
 
-    dense2 = tf.layers.dense(
-        inputs=z,
-        units=num_units,
-        activation=tf.nn.relu
-    )
+        # Create hidden layers
+        linear = snt.Linear(self.num_units,
+                            name='encoder_hidden')
+        dense = linear(flattened)
+        dense = tf.nn.relu(dense)
 
-    dense3 = tf.layers.dense(
-        inputs=dense2,
-        units=num_units,
-        activation=tf.nn.relu
-    )
+        # Mean for the latent distributions
+        linear = snt.Linear(self.latent_dim,
+                            name='encoder_mu')
+        mu = linear(dense)
 
+        # Standard deviation for the latent distributions
+        # The softplus will ensure that sigma is positive
+        linear = snt.Linear(self.latent_dim,
+                            name='encoder_sigma')
 
-    outputs = tf.layers.dense(
-        inputs=dense3,
-        units=num_inputs,
-        activation=None
-    )
+        sigma = linear(dense)
+        sigma = tf.nn.softplus(sigma)
 
-    outputs = tf.reshape(outputs, [-1, 28, 28])
+        return mu, sigma
 
-    return outputs
 
-def create_model(features, params):
+    @snt.reuse_variables
+    def decode(self, latent_code):
+        """
+        Builds the decoder part of the VAE
+        """
 
-    num_inputs = 28*28
-    num_units = 300
-    num_z = 2
+        # Create regular hidden layers
+        # Layer 1
+        linear = snt.Linear(self.num_units,
+                            name='decoder_hidden_1')
+        dense = linear(latent_code)
+        dense = tf.nn.relu(dense)
 
-    # ==========================================================================
-    # Encoder
-    # ==========================================================================
+        # Layer 2
+        linear = snt.Linear(self.num_units,
+                            name='decoder_hidden_2')
+        dense = linear(dense)
+        dense = tf.nn.relu(dense)
 
+        # Layer 3
+        linear = snt.Linear(self.num_inputs,
+                            name='decoder_hidden_logits')
+        logits = linear(dense)
 
+        to_output_shape = snt.BatchReshape(shape=self.input_shape)
+        output = to_output_shape(logits)
 
-    # W_1 = tf.get_variable("encoder_w_1", [num_inputs, num_units])
-    # b_1 = tf.get_variable("encoder_b_1", [num_units])
+        decoder_bernoulli = tfd.Bernoulli(logits=output)
 
-    # encoder_L_1 = tf.matmul(inputs, W_1) + b_1
-    # encoder_L_1 = tf.nn.relu(encoder_L_1)
+        return decoder_bernoulli
 
-    # W_2_mu = tf.get_variable("encoder_w_2_mu", [num_units, num_z])
-    # b_2_mu = tf.get_variable("encoder_b_2_mu", [num_z])
 
-    # encoder_mu = tf.matmul(encoder_L_1, W_2_mu) + b_2_mu
+    def _build(self, inputs):
+        """
+        Build standard VAE:
+        1. Encode input -> latent mu, sigma
+        2. Sample z ~ N(z | mu, sigma)
+        3. Decode z -> output Bernoulli means
+        4. Sample o ~ Bernoulli(o | z)
+        """
+        #assert tf.shape(inputs) == self.input_shape
 
-    # W_2_sigma = tf.get_variable("encoder_w_2_sigma", [num_units, num_z])
-    # b_2_sigma = tf.get_variable("encoder_b_2_sigma", [num_z])
+        # Define the prior
+        self.latent_prior = tfd.Normal(
+            loc=np.zeros(self.latent_dim, dtype=np.float32),
+            scale=np.ones(self.latent_dim, dtype=np.float32))
 
-    # encoder_sigma = tf.matmul(encoder_L_1, W_2_sigma) + b_2_sigma
-    # encoder_sigma = tf.nn.softplus(encoder_sigma)
+        # Define the encoding - decoding process
+        q_mu, q_sigma = self.encode(inputs)
 
-    # ==========================================================================
-    # Decoder
-    # ==========================================================================
+        self.q_distribution = tfd.Normal(loc=q_mu, scale=q_sigma)
+        assert self.q_distribution.reparameterization_type == tfd.FULLY_REPARAMETERIZED
 
-    # The decoder is p_phi(x | z)
+        z = self.q_distribution.sample()
 
-    #epsilon = tf.distributions.Normal(loc=0., scale=1.).sample([num_z])
+        output_distribution = self.decode(z)
 
-    #z = encoder_mu + encoder_sigma * epsilon
+        self.log_prob = output_distribution.log_prob(inputs)
 
-    q_mu, q_sigma = encoder(features)
+        return output_distribution.sample()
 
-    q_distribution = tfp.distributions.Normal(loc=q_mu, scale=q_sigma)
-
-    assert q_distribution.reparameterization_type == tfp.distributions.FULLY_REPARAMETERIZED
-
-    z = q_distribution.sample()
-
-    outputs = decoder(z)
-
-    # W_3 = tf.get_variable("decoder_w_3", [num_z, num_units])
-    # b_3 = tf.get_variable("decoder_b_3", [num_units])
-
-    # decoder_L_1 = tf.matmul(z, W_3) + b_3
-    # decoder_L_1 = tf.nn.relu(decoder_L_1)
-
-    # W_4 = tf.get_variable("decoder_w_4", [num_units, num_inputs])
-    # b_4 = tf.get_variable("decoder_b_4", [num_inputs])
-
-    # decoder_out = tf.matmul(decoder_L_1, W_4) + b_4
-    # decoder_out = tf.nn.sigmoid(decoder_out)
-
-    decoder_bern = tfp.distributions.Bernoulli(logits=outputs)
-
-    post_pred_samp = decoder_bern.sample()
-
-    tf.summary.image('posterior_predictive',
-                     tf.cast(tf.reshape(post_pred_samp, [-1, 28, 28, 1]), tf.float32))
-
-    # log prior on hidden units
-    # log_prior = -num_z/2.0 * np.log(2 * np.pi) - 0.5 * tf.norm(z)
-
-    # # log variational posterior
-    # log_var_post = -num_z/2.0 * (np.log(2 * np.pi) + 2 * tf.reduce_sum(tf.log(encoder_sigma)))
-    # log_var_post += - 0.5 * tf.norm(tf.divide(z - encoder_mu, encoder_sigma))
-
-    hidden_prior = tfp.distributions.Normal(loc=np.zeros(num_z, dtype=np.float32),
-                                           scale=np.ones(num_z, dtype=np.float32))
-    # kl_divergence = log_var_post - log_prior
-
-    kl_divergence = tf.reduce_sum(tfp.distributions.kl_divergence(q_distribution, hidden_prior), 1)
-
-    loss = tf.reduce_sum(decoder_bern.log_prob(features), [1, 2]) # labels * tf.log(decoder_out) + (1 - labels) * tf.log(1 - decoder_out)
-
-    loss = tf.reduce_sum(kl_divergence - loss, 0)
-
-    return outputs, loss
-
-
-def baseline_vae_model_fn(features, labels, mode, params):
-
-    decoder_out, loss = create_model(features, params)
-
-    if mode == tf.estimator.ModeKeys.PREDICT:
-        return tf.estimator.EstimatorSpec(mode=mode, predictions=decoder_out)
-
-    if mode == tf.estimator.ModeKeys.TRAIN:
-        optimizer = tf.train.RMSPropOptimizer(learning_rate=LEARNING_RATE)
-        train_op = optimizer.minimize(loss=loss,
-                                      global_step=tf.train.get_global_step())
-
-        return tf.estimator.EstimatorSpec(mode=mode,
-                                          loss=loss,
-                                          train_op=train_op)
-
-    if mode == tf.estimator.ModeKeys.EVAL:
-        eval_metric_ops = {
-            "accuracy": tf.metrics.accuracy(labels=labels,
-                                            predictions=decoder_out)
-        }
-
-        return tf.estimator.EstimatorSpec(mode=mode,
-                                          loss=loss,
-                                          eval_metric_ops=eval_metric_ops)
-
-
-def baseline_vae_input_fn():
-
-    ((train_data, train_labels),
-     (eval_data, eval_labels)) = tf.keras.datasets.mnist.load_data()
-
-    dataset = tf.data.Dataset.from_tensor_slices(train_data)
-    dataset = dataset.shuffle(100000)
-    dataset = dataset.repeat(5)
-    dataset = dataset.map(map_func=to_black_and_white)
-    dataset = dataset.batch(batch_size=100)
-
-    return dataset
-
-def to_black_and_white(img):
-
-    return tf.cast((img < 128), tf.float32)
 
