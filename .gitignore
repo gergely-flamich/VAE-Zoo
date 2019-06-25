@@ -1,4 +1,6 @@
+vae_venv
 venv/
 papers/
 .DS_Store
 __pycache__/
+.ipynb*

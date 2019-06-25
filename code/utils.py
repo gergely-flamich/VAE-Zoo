@@ -1,3 +1,5 @@
+import tensorflow as tf
+
 import argparse
 import os, tempfile
 
@@ -19,3 +21,32 @@ def is_valid_file(parser, arg):
         return arg
     except Exception:
         parser.error("A file at the given path cannot be created: " % arg)
+
+# ==============================================================================
+# Tensorflow helper functions
+# ==============================================================================
+
+def setup_eager_checkpoints_and_restore(variables, checkpoint_dir, checkpoint_name="_ckpt"):
+    """
+    Convenience function to set up TF eager checkpoints for the given variables.
+
+    variables - iterable of TF Variables that we want to checkpoint
+    checkpoint_dir - string containing the checkpoint path
+    """
+
+    ckpt_prefix = os.path.join(checkpoint_dir, checkpoint_name)
+
+    checkpoint = tf.train.Checkpoint(**{v.name: v for v in variables})
+
+    latest_checkpoint_path = tf.train.latest_checkpoint(checkpoint_dir)
+
+    if latest_checkpoint_path is None:
+        print("No checkpoint found!")
+    else:
+        print("Checkpoint found at {}, restoring...".format(latest_checkpoint_path))
+        checkpoint.restore(latest_checkpoint_path).assert_consumed()
+        print("Model restored!")
+
+    return checkpoint, ckpt_prefix
+
+
