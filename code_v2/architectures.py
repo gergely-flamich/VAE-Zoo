@@ -23,7 +23,7 @@ class ManifoldEncoder(tfl.Layer):
         # --------------------------------------------------------------
         
         self.layers = [
-            tfl.Reshape((28, 28, 1), input_shape=(28, 28)),
+            tfl.Reshape((128, 128, 3), input_shape=(128, 128, 3)),
             tfl.Conv2D(filters=64,
                        kernel_size=(5, 5),
                        strides=2,
@@ -36,6 +36,22 @@ class ManifoldEncoder(tfl.Layer):
                        padding="same",
                        use_bias=False,
                        name="encoder_conv2"),
+            tfl.BatchNormalization(),
+            tf.nn.leaky_relu,
+            tfl.Conv2D(filters=128,
+                       kernel_size=(5, 5),
+                       strides=2,
+                       padding="same",
+                       use_bias=False,
+                       name="encoder_conv3"),
+            tfl.BatchNormalization(),
+            tf.nn.leaky_relu,
+            tfl.Conv2D(filters=128,
+                       kernel_size=(5, 5),
+                       strides=2,
+                       padding="same",
+                       use_bias=False,
+                       name="encoder_conv3"),
             tfl.BatchNormalization(),
             tf.nn.leaky_relu,
             tfl.Flatten(),
@@ -89,11 +105,25 @@ class ManifoldDecoder(tfl.Layer):
         self.layers = [
             tfl.Dense(units=1024),
             tf.nn.leaky_relu,
-            tfl.Dense(units=7 * 7 * 128,
+            tfl.Dense(units=8 * 8 * 128,
                       use_bias=False),
             tfl.BatchNormalization(),
             tf.nn.leaky_relu,
-            tfl.Reshape((7, 7, 128)),
+            tfl.Reshape((8, 8, 128)),
+            tfl.Conv2DTranspose(filters=128,
+                                kernel_size=(5, 5),
+                                strides=2,
+                                padding="same",
+                                use_bias=False),
+            tfl.BatchNormalization(),
+            tf.nn.leaky_relu,
+            tfl.Conv2DTranspose(filters=128,
+                                kernel_size=(5, 5),
+                                strides=2,
+                                padding="same",
+                                use_bias=False),
+            tfl.BatchNormalization(),
+            tf.nn.leaky_relu,
             tfl.Conv2DTranspose(filters=64,
                                 kernel_size=(5, 5),
                                 strides=2,
@@ -101,7 +131,7 @@ class ManifoldDecoder(tfl.Layer):
                                 use_bias=False),
             tfl.BatchNormalization(),
             tf.nn.leaky_relu,
-            tfl.Conv2DTranspose(filters=1,
+            tfl.Conv2DTranspose(filters=3,
                                 kernel_size=(5, 5),
                                 padding="same",
                                 strides=2)
@@ -171,7 +201,7 @@ class ManifoldVAE(tfk.Model):
         latents = self.encoder(inputs, training=training)
         reconstruction = self.decoder(latents, training=training)
         
-        self._log_prob = self.likelihood.log_prob(inputs[..., tf.newaxis])
+        self._log_prob = self.likelihood.log_prob(inputs)
         
         return reconstruction
     
@@ -291,8 +321,11 @@ class MeasureVAE(tfk.Model):
                                 scale=tf.ones(latent_dim))
         
         # Define blocks
-        self.encoder = MeasureEncoder(latent_dim=self.latent_dim, second_stage_depth=second_stage_depth)
-        self.decoder = MeasureDecoder(second_stage_depth=second_stage_depth)
+        self.encoder = MeasureEncoder(latent_dim=self.latent_dim, 
+                                      second_stage_depth=second_stage_depth)
+        
+        self.decoder = MeasureDecoder(second_stage_depth=second_stage_depth,
+                                      latent_dim=self.latent_dim)
         
     @property 
     def posterior(self):

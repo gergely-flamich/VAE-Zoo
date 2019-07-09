@@ -1,4 +1,4 @@
-import os, json
+import os, json, argparse
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -7,11 +7,14 @@ tfk = tf.keras
 tfl = tf.keras.layers
 tfs = tf.summary
 
+import tensorflow_datasets as tfds
+
 import numpy as np
 
 from tqdm import tqdm
 
 from architectures import ManifoldVAE, MeasureVAE
+from utils import is_valid_file
 
 
 MODEL_DIR = "/tmp/2-stage-vae-v3/"
@@ -22,6 +25,8 @@ config = {
         "num_epochs": 400,
         "num_epochs_stage_2": 800,
         
+        "num_latents": 128,
+    
         "beta1": 1.,
         "beta2": 1.,
         "warmup": 10.,
@@ -32,7 +37,38 @@ config = {
         
         "checkpoint_name": "_ckpt",
         "log_freq": 100,
+}
+
+datasets = {
+    
+    "mnist": {
+        "num_training_examples": 60000,
+    },
+    
+    "celeba": {
+        "num_training_examples": 162770,
     }
+}
+
+def parse_celeba(datum):
+    return tf.cast(datum["image"][45:-45, 25:-25, :], tf.float32) / 255.
+
+def load_celeba_data(train=True, data_dir="/tmp/tensorflow_datasets", batch_size=64, shuffle_buffer=2048):
+    
+    data, info = tfds.load("celeb_a", with_info=True, as_supervised=False, data_dir=data_dir)
+    train_data, test_data = data['train'], data['test']
+    
+    if train:
+        celeba = train_data
+    else:
+        celeba = test_data
+    
+    celeba = celeba.map(parse_celeba).shuffle(shuffle_buffer).batch(batch_size)
+
+    celeba = celeba.prefetch(tf.data.experimental.AUTOTUNE)
+    
+    return celeba
+
 
 def mnist_input_fn(data, batch_size=256, shuffle_samples=5000):
     dataset = tf.data.Dataset.from_tensor_slices(data)
@@ -52,10 +88,14 @@ optimizers = {
     "adam": tfk.optimizers.Adam,
 }
 
-def run():
+def run(model_dir,
+        dataset_name,
+        train_first=True,
+        train_second=True):
+    
+    print("Using " + dataset_name)
 
-    num_batches = config["num_training_examples"] // config["batch_size"] + 1
-
+    num_batches = datasets[dataset_name]["num_training_examples"] // config["batch_size"] + 1
 
     print("Configuration:")
     print(json.dumps(config, indent=4, sort_keys=True))
@@ -64,15 +104,16 @@ def run():
     # Load dataset
     # ==========================================================================
 
-    ((train_data, _),
-     (eval_data, _)) = tf.keras.datasets.mnist.load_data()
+    if dataset_name == "mnist":
+        ((train_data, _),
+         (eval_data, _)) = tf.keras.datasets.mnist.load_data()
 
     # ==========================================================================
     # Create model
     # ==========================================================================
 
-    manifold_vae = ManifoldVAE(latent_dim=64)
-    measure_vae = MeasureVAE(latent_dim=64)
+    manifold_vae = ManifoldVAE(latent_dim=config["num_latents"])
+    measure_vae = MeasureVAE(latent_dim=config["num_latents"])
 
     manifold_optimizer = optimizers[config["optimizer"]](config["learning_rate"])
     measure_optimizer = optimizers[config["optimizer"]](config["learning_rate"])
@@ -83,17 +124,17 @@ def run():
 
     # Create checkpoint and its manager
     manifold_ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=manifold_optimizer, net=manifold_vae)
-    manifold_manager = tf.train.CheckpointManager(manifold_ckpt, MODEL_DIR + "/manifold_checkpoints", max_to_keep=3)
+    manifold_manager = tf.train.CheckpointManager(manifold_ckpt, model_dir + "/manifold_checkpoints", max_to_keep=3)
 
     measure_ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=measure_optimizer, net=measure_vae)
-    measure_manager = tf.train.CheckpointManager(measure_ckpt, MODEL_DIR + "/measure_checkpoints", max_to_keep=3)
+    measure_manager = tf.train.CheckpointManager(measure_ckpt, model_dir + "/measure_checkpoints", max_to_keep=3)
 
     # Attempt to restore model
     manifold_ckpt.restore(manifold_manager.latest_checkpoint)
     if manifold_manager.latest_checkpoint:
         print("Restored from {}".format(manifold_manager.latest_checkpoint))
     else:
-        print("Initializing manifold VAE from scratch.")
+        print("Initializing Manifold VAE from scratch.")
 
     # Attempt to restore model
     measure_ckpt.restore(measure_manager.latest_checkpoint)
@@ -111,8 +152,11 @@ def run():
 
         for epoch in range(1, config["num_epochs"] + 1):
 
-            dataset = mnist_input_fn(data=train_data,
-                                    batch_size=config["batch_size"])
+            if dataset_name == "mnist":
+                dataset = mnist_input_fn(data=train_data,
+                                        batch_size=config["batch_size"])
+            elif dataset_name == "celeba":
+                dataset = load_celeba_data(batch_size=config["batch_size"])
 
             with tqdm(total=num_batches) as pbar:
                 for batch in dataset:
@@ -165,8 +209,11 @@ def run():
 
         for epoch in range(1, config["num_epochs_stage_2"] + 1):
 
-            dataset = mnist_input_fn(data=train_data,
-                                    batch_size=config["batch_size"])
+            if dataset_name == "mnist":
+                dataset = mnist_input_fn(data=train_data,
+                                        batch_size=config["batch_size"])
+            elif dataset_name == "celeba":
+                dataset = load_celeba_data(batch_size=config["batch_size"])
 
             with tqdm(total=num_batches) as pbar:
                 for batch in dataset:
@@ -214,7 +261,7 @@ def run():
 
         print("Second Stage Training Complete!")
 
-    train_summary_writer = tfs.create_file_writer(MODEL_DIR + '/summaries/train')            
+    train_summary_writer = tfs.create_file_writer(model_dir + '/summaries/train')            
 
     with train_summary_writer.as_default():
         train_first_stage(log_freq=50)
@@ -224,4 +271,34 @@ def run():
         train_second_stage(log_freq=50)
         
 if __name__ == "__main__":
-    run()
+    
+    parser = argparse.ArgumentParser(description='Experimental models for 2-stage VAEs')
+
+    parser.add_argument('--config', type=open, default=None,
+                    help='Path to the config JSON file.')
+
+    parser.add_argument('--dataset',
+                        choices=list(datasets),
+                        default="mnist")
+    
+    parser.add_argument('--no_train_first',
+                        action="store_false",
+                        dest="train_first",
+                        default=True)
+    
+    parser.add_argument('--no_train_second',
+                        action="store_false",
+                        dest="train_second",
+                        default=True)
+    
+    parser.add_argument('--model_dir',
+                        type=lambda x: is_valid_file(parser, x),
+                        default=MODEL_DIR,
+                        help='The model directory.')
+
+    args = parser.parse_args()
+    
+    run(train_first=args.train_first,
+        train_second=args.train_second,
+        dataset_name=args.dataset,
+        model_dir=args.model_dir)
