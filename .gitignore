@@ -1,6 +1,17 @@
+# Virtual environments
 vae_venv*
 venv/
+*venv
+
+# Folders
 papers/
-.DS_Store
 __pycache__/
+
+# Mac
+.DS_Store
+
+# Jupyter
 .ipynb*
+
+# PyCharm
+.idea
