@@ -1,5 +1,7 @@
 # Welcome to the Variational Auto-Encoder Zoo!
 
+If you are visiting on GitHub, you can find a nicer version of this documentation [here](https://gergely-flamich.github.io/VAE-Zoo/).
+
 Note that this is site currently under construction.
 
 ## Introduction
@@ -14,3 +16,7 @@ Clone this repository:
 ```
 > git clone https://github.com/gergely-flamich/VAE-Zoo.git
 ```
+
+## Contact
+
+Please contact the author via e-mail: flamich dot gergely at gmail dot com
